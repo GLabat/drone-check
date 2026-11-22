@@ -65,6 +65,8 @@ a{color:inherit}
 <div id="out"></div>
 <div id="hist"></div>
 <p class="foot">Aide à la décision, pas une autorisation de vol. Données : carte des restrictions DGAC et couches de protection du patrimoine naturel, via l'IGN. La précision du GPS et des limites de zones est d'environ quelques dizaines de mètres. Vérifiez toujours sur <a href="https://cartes.gouv.fr/explorer-les-cartes/" target="_blank" rel="noopener">cartes.gouv.fr</a> et respectez les règles locales, la propriété des terrains et les personnes autour de vous.</p>
+<div class="row"><button id="st" type="button" style="padding:9px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);cursor:pointer;font-size:14px">Lancer l'auto-test des données</button></div>
+<div id="stout"></div>
 </main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
@@ -299,6 +301,61 @@ $('form').onsubmit=async ev=>{
   }catch(e){
     sg.innerHTML='<div class="none">'+esc(e.client?'La recherche a été refusée par le service (essayez une adresse plus précise).':NETERR)+'</div>';
   }
+};
+
+/* ---------- auto-test ---------- */
+const REFS=[
+ {n:'Mont-de-Marsan (avenue du Vignau)',x:-0.460527,y:43.887488,k:'X',t:'Vol interdit'},
+ {n:'Campagne près de Perquie (Landes)',x:-0.24,y:43.8505,k:'L',t:'Libre'},
+ {n:'Marcoussis, rue de Bellejame',x:2.2489,y:48.6407,k:'A',t:'Agglomération'}
+];
+$('st').onclick=async()=>{
+  const box=$('stout'),btn=$('st');btn.disabled=true;
+  const rows=[];
+  const show=(final)=>{
+    box.innerHTML='<div class="card"><h3>Auto-test des données</h3><ul style="list-style:none;padding:0">'+rows.map(r=>'<li>'+(r.ok===null?'⏳':r.ok?'✅':'❌')+' '+esc(r.t)+(r.d?'<div class="meta">'+esc(r.d)+'</div>':'')+'</li>').join('')+'</ul>'+(final||'')+'</div>';
+  };
+  const run=async(t,fn)=>{
+    const r={t,ok:null,d:''};rows.push(r);show();
+    try{const d=await fn();r.ok=true;r.d=d||'';}catch(e){r.ok=false;r.d=e.message||String(e);}
+    show();await sleep(150);
+  };
+  await run('Géocodage IGN (recherche d\'adresse)',async()=>{
+    const j=await jget(GEO+'/search?q='+encodeURIComponent('122 avenue du Vignau Mont-de-Marsan')+'&limit=1');
+    if(!j.features||!j.features.length)throw new Error('aucun résultat');
+    return j.features[0].properties.label;
+  });
+  await run('Format de la couche DGAC (champs attendus)',async()=>{
+    const u=WFS+'?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=TRANSPORTS.DRONES.RESTRICTIONS:carte_restriction_drones_lf&OUTPUTFORMAT=application/json&SRSNAME=EPSG:4326&COUNT=1&BBOX=-0.4705,43.8775,-0.4505,43.8975,EPSG:4326';
+    const j=await jget(u);const f=j.features&&j.features[0];
+    if(!f)throw new Error('aucune zone renvoyée là où il devrait y en avoir');
+    const ks=Object.keys(f.properties);
+    if(ks.indexOf('limite')<0||ks.indexOf('remarque')<0)throw new Error('champs trouvés : '+ks.join(', '));
+    return 'champs : '+ks.join(', ');
+  });
+  for(const ref of REFS){
+    await run('Point de référence : '+ref.n,async()=>{
+      const r=await restrictions(ref.x,ref.y);
+      if(r.kind!==ref.k)throw new Error('attendu « '+ref.t+' », obtenu « '+(TEXT[r.kind]?TEXT[r.kind].t:r.kind)+' »');
+      return TEXT[r.kind].t;
+    });
+  }
+  await run('Espaces protégés (Lourmarin : au moins un espace attendu)',async()=>{
+    const items=[];await protectedAreas(5.345,43.775,i=>items.push(i));
+    const errs=items.filter(i=>i.err).length;
+    if(errs)throw new Error(errs+' couche(s) indisponible(s)');
+    if(!items.length)throw new Error('aucun espace détecté, alors que Natura 2000 est attendu');
+    return items.length+' espace(s) détecté(s)';
+  });
+  await run('Comptage des bâtiments',async()=>{
+    const n=await buildings(-0.460527,43.887488);
+    if(n===null||n<1)throw new Error('pas de réponse exploitable');
+    return n+' bâtiments';
+  });
+  const bad=rows.filter(r=>!r.ok).length;
+  const when=new Date().toLocaleString('fr-FR',{dateStyle:'short',timeStyle:'short'});
+  show('<div class="'+(bad?'warn':'meta')+'" style="margin-top:10px">'+(bad?'⚠️ '+bad+' contrôle(s) en échec : ne vous fiez pas aux résultats tant que ce n\'est pas expliqué (changement de format ou de données possible côté IGN, ou réseau instable : relancez le test).':'Tout est conforme ('+esc(when)+').')+'</div>');
+  btn.disabled=false;
 };
 renderHist();
 </script>
